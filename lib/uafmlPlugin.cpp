@@ -11,7 +11,7 @@ void registerAnalyses(FunctionAnalysisManager &FAM) {FAM.} {
 bool registerPipeline(StringRef Name, FunctionPassManager &FPM,
                       ArrayRef<PassBuilder::PipelineElement>) {
     if (Name == "<uafml>") {
-        FPM.addPass(addconst::UAFMLPrinterPass(errs()));
+        FPM.addPass(uafml::UAFMLPrinterPass(errs()));
         return true;
     }
     return false;

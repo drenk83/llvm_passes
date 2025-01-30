@@ -4,7 +4,7 @@
 
 using namespace llvm;
 
-namespace addconst {
+namespace uafml {
 
     AnalysisKey UAFMLAnalysis::Key;
 
