@@ -4,7 +4,7 @@
 
 using namespace llvm;
 
-void registerAnalyses(FunctionAnalysisManager &FAM) {FAM.} {
+void registerAnalyses(FunctionAnalysisManager &FAM) {
 	FAM.registerPass([] { return uafml::UAFMLAnalysis(); });
 }
 
@@ -15,6 +15,14 @@ bool registerPipeline(StringRef Name, FunctionPassManager &FPM,
         return true;
     }
     return false;
+}
+
+PassPluginLibraryInfo getUAFMLPluginInfo() {
+    return {LLVM_PLUGIN_API_VERSION, "uafml", LLVM_VERSION_STRING,
+            [](PassBuilder &PB) {
+                PB.registerAnalysisRegistrationCallback(registerAnalyses);
+                PB.registerPipelineParsingCallback(registerPipeline);
+            }};
 }
 
 extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {

@@ -1,8 +1,13 @@
 cmake_minimum_required(VERSION 3.13.4)
 project(uafml)
 
-set(LLVM_INSTALL_DIR "" CACHE PATH "/usr/lib/llvm-14")
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+set(LLVM_INSTALL_DIR "/usr/lib/llvm-14" CACHE PATH "/usr/lib/llvm-14" FORCE)
 set(LLVM_INSTALL_INCLUDE "${LLVM_INSTALL_DIR}/include/llvm")
+
+set(LLVM_INSTALL_CMAKE "${LLVM_INSTALL_DIR}/lib/cmake/llvm/LLVMConfig.cmake")
+list(APPEND CMAKE_PREFIX_PATH "${LLVM_INSTALL_DIR}/lib/cmake/llvm/")
 
 find_package(LLVM REQUIRED CONFIG)
 
