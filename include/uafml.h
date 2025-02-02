@@ -1,5 +1,5 @@
-#ifndef AUF_H
-#define AUF_H
+#ifndef UAFML_H
+#define UAFML_H
 
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/PassManager.h"
@@ -21,7 +21,5 @@ struct UAFMLPrinterPass : public llvm::PassInfoMixin<UAFMLPrinterPass> {
 };
 
 }
-
-// test
 
 #endif
