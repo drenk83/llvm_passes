@@ -14,17 +14,24 @@ namespace uafml {
     UAFMLAnalysis::Result UAFMLAnalysis::run(llvm::Function &F, llvm::FunctionAnalysisManager &FAM){
         int MLFlag = 0, UAFFlag = 0, mallocFlag = 0, mallocCount = 0, freeCount = 0;
         llvm::Instruction *PrevInst = nullptr;
+        llvm::Instruction *PrevPrevInst = nullptr;
         std::vector<int> OutRes;
         std::map<int, std::vector<Value*>> mallocOperands;
         std::vector<Value*> freeOperands;
         Value *PointerOperand;
-        Value *loadOperand, *storeOperand;
+        Value *loadOperand, *storeOperand, *valueOperand;
         for (BasicBlock &BB : F) {
             for (Instruction &I : BB) {
                 if (PrevInst != nullptr) {
-                    for (unsigned i = 0; i < PrevInst->getNumOperands(); i++) {
+                    for (unsigned i = 0; i < PrevInst->getNumOperands(); i++) {                            
                         Value *Operand = PrevInst->getOperand(i);
                         if (std::find(freeOperands.begin(), freeOperands.end(), Operand) != freeOperands.end()) {
+                            if (auto *Store = dyn_cast<StoreInst>(PrevInst)) {
+                                storeOperand = Store->getPointerOperand();
+                                valueOperand = Store->getValueOperand();
+                                if (isa<ConstantPointerNull>(valueOperand))
+                                    continue;
+                            }
                             if (auto *Call = dyn_cast<CallInst>(&I)) {
                                 llvm::Function *Callee = Call->getCalledFunction();
                                 if (Callee && Callee->getName() != "free") {
@@ -37,24 +44,27 @@ namespace uafml {
                 }
 
                 if (auto *Store = dyn_cast<StoreInst>(&I)) {
-                    if (auto *Load = dyn_cast<LoadInst>(PrevInst)) {
-                        storeOperand = Store->getPointerOperand();
-                        loadOperand = Load->getPointerOperand();
+                    if (PrevInst){
+                        if (auto *Load = dyn_cast<LoadInst>(PrevInst)) {
+                            storeOperand = Store->getPointerOperand();
+                            loadOperand = Load->getPointerOperand();
 
-                        for (auto &loadop : mallocOperands) {
-                            if (std::find(loadop.second.begin(), loadop.second.end(), loadOperand) != loadop.second.end()) {
-                                mallocOperands[loadop.first].push_back(storeOperand);
-                            }
-                        } 
+                            for (auto &loadop : mallocOperands) {
+                                if (std::find(loadop.second.begin(), loadop.second.end(), loadOperand) != loadop.second.end()) {
+                                    mallocOperands[loadop.first].push_back(storeOperand);
+                                }
+                            } 
+                        }
                     }
                 }
 
                 if(mallocFlag){
-                    auto *Store = dyn_cast<StoreInst>(&I);
-                    PointerOperand = Store->getPointerOperand();
-                    mallocOperands[mallocCount].push_back(PointerOperand);
-                    mallocCount++;
-                    mallocFlag--;
+                    if(auto *Store = dyn_cast<StoreInst>(&I)){
+                        PointerOperand = Store->getPointerOperand();
+                        mallocOperands[mallocCount].push_back(PointerOperand);
+                        mallocCount++;
+                        mallocFlag--;
+                    }
                 }
 
                 if (auto *Call = dyn_cast<CallInst>(&I)) {
@@ -64,20 +74,33 @@ namespace uafml {
                     }
 
                     if (Callee && Callee->getName() == "free") {
-                        auto *Load = dyn_cast<LoadInst>(PrevInst);
-                        PointerOperand = Load->getPointerOperand();
-
-                        for (auto &indx : mallocOperands) {
-                            if (std::find(indx.second.begin(), indx.second.end(), PointerOperand) != indx.second.end()) {
-                                if (std::find(freeOperands.begin(), freeOperands.end(), PointerOperand) == freeOperands.end())
-                                    freeCount++;
-                                for (auto &oper : indx.second) {
-                                    freeOperands.push_back(oper);
+                        if (auto *Load = dyn_cast<LoadInst>(PrevInst)){
+                            PointerOperand = Load->getPointerOperand();
+                            for (auto &indx : mallocOperands) {
+                                if (std::find(indx.second.begin(), indx.second.end(), PointerOperand) != indx.second.end()) {
+                                    if (std::find(freeOperands.begin(), freeOperands.end(), PointerOperand) == freeOperands.end())
+                                        freeCount++;
+                                    for (auto &oper : indx.second) {
+                                        freeOperands.push_back(oper);
+                                    }
+                                }
+                            }
+                        }
+                        else if (auto *Load = dyn_cast<LoadInst>(PrevPrevInst)) {
+                            PointerOperand = Load->getPointerOperand();
+                            for (auto &indx : mallocOperands) {
+                                if (std::find(indx.second.begin(), indx.second.end(), PointerOperand) != indx.second.end()) {
+                                    if (std::find(freeOperands.begin(), freeOperands.end(), PointerOperand) == freeOperands.end())
+                                        freeCount++;
+                                    for (auto &oper : indx.second) {
+                                        freeOperands.push_back(oper);
+                                    }
                                 }
                             }
                         }
                     }
                 }
+                if (PrevInst) PrevPrevInst = PrevInst;
                 PrevInst = &I;
             }
         }

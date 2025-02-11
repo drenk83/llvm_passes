@@ -9,9 +9,7 @@
 namespace uafml {
 
 struct UAFMLAnalysis : public llvm::AnalysisInfoMixin<UAFMLAnalysis> {
-	//using Result = llvm::SmallVector<llvm::Instruction *, 0>;
 	using Result = std::vector<int>;
-	//std::vector<int> Result = {};
 	Result run(llvm::Function &F, llvm::FunctionAnalysisManager &FAM);
 	static llvm::AnalysisKey Key;
 };
