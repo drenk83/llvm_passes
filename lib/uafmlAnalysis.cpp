@@ -13,7 +13,7 @@ namespace uafml {
 
     UAFMLAnalysis::Result UAFMLAnalysis::run(llvm::Function &F, llvm::FunctionAnalysisManager &FAM){
         int MLFlag = 0, UAFFlag = 0, mallocFlag = 0, mallocCount = 0, freeCount = 0;
-        llvm::Instruction *PrevInst;
+        llvm::Instruction *PrevInst = nullptr;
         std::vector<int> OutRes;
         std::map<int, std::vector<Value*>> mallocOperands;
         std::vector<Value*> freeOperands;
@@ -21,10 +21,18 @@ namespace uafml {
         Value *loadOperand, *storeOperand;
         for (BasicBlock &BB : F) {
             for (Instruction &I : BB) {
-                for (unsigned i = 0; i < I.getNumOperands(); i++) {
-                    Value *Operand = I.getOperand(i);
-                    if (std::find(freeOperands.begin(), freeOperands.end(), Operand) != freeOperands.end()) {
-                        UAFFlag = 1;
+                if (PrevInst != nullptr) {
+                    for (unsigned i = 0; i < PrevInst->getNumOperands(); i++) {
+                        Value *Operand = PrevInst->getOperand(i);
+                        if (std::find(freeOperands.begin(), freeOperands.end(), Operand) != freeOperands.end()) {
+                            if (auto *Call = dyn_cast<CallInst>(&I)) {
+                                llvm::Function *Callee = Call->getCalledFunction();
+                                if (Callee && Callee->getName() != "free") {
+                                    UAFFlag = 1;
+                                }
+                            }
+                            else UAFFlag = 1;
+                        }
                     }
                 }
 
@@ -58,6 +66,7 @@ namespace uafml {
                     if (Callee && Callee->getName() == "free") {
                         auto *Load = dyn_cast<LoadInst>(PrevInst);
                         PointerOperand = Load->getPointerOperand();
+
                         for (auto &indx : mallocOperands) {
                             if (std::find(indx.second.begin(), indx.second.end(), PointerOperand) != indx.second.end()) {
                                 if (std::find(freeOperands.begin(), freeOperands.end(), PointerOperand) == freeOperands.end())
@@ -71,10 +80,10 @@ namespace uafml {
                 }
                 PrevInst = &I;
             }
-            if(mallocCount != freeCount) {
+        }
+        if(mallocCount != freeCount) {
                 MLFlag = 1;
             }
-        }
         OutRes.push_back(MLFlag);
         OutRes.push_back(UAFFlag);
         return OutRes;
@@ -83,9 +92,14 @@ namespace uafml {
     PreservedAnalyses UAFMLPrinterPass::run(Function &F,
                                            FunctionAnalysisManager &FAM) {
         auto &OutRes = FAM.getResult<UAFMLAnalysis>(F);
-        if (OutRes[0] == 1 || OutRes[1] == 1) OS << "Function name: " << F.getName() << "\n";
-        if (OutRes[0] == 1) OS << "\tWARNING: Memory Leak detection\n";
-        if (OutRes[1] == 1) OS << "\tWARNING: Use After Free detection\n";
+
+        if (OutRes[0] == 1 || OutRes[1] == 1) {
+            OS << "Function name: " << F.getName() << "\n";
+            if (OutRes[0] == 1) OS << "\tWARNING: Memory Leak detection\n";
+            if (OutRes[1] == 1) OS << "\tWARNING: Use After Free detection\n";
+        }
+        else OS << "Everything is fine!\n";
+
         return PreservedAnalyses::all();
     }
 }
