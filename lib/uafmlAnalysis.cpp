@@ -4,125 +4,151 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/IR/Attributes.h"
 #include <map>
+#include <set>
 
 using namespace llvm;
 
 namespace uafml {
 
-    AnalysisKey UAFMLAnalysis::Key;
+AnalysisKey UAFMLAnalysis::Key;
 
-    UAFMLAnalysis::Result UAFMLAnalysis::run(llvm::Function &F, llvm::FunctionAnalysisManager &FAM){
-        int MLFlag = 0, UAFFlag = 0, mallocFlag = 0, mallocCount = 0, freeCount = 0;
-        llvm::Instruction *PrevInst = nullptr;
-        llvm::Instruction *PrevPrevInst = nullptr;
-        std::vector<int> OutRes;
-        std::map<int, std::vector<Value*>> mallocOperands;
-        std::vector<Value*> freeOperands;
-        Value *PointerOperand;
-        Value *loadOperand, *storeOperand, *valueOperand;
+UAFMLAnalysis::Result UAFMLAnalysis::run(llvm::Function &F, llvm::FunctionAnalysisManager &FAM) {
+    Result res;
+    res.flags = {0, 0}; // 0 - MLFlag, 1 - UAFFlag
+
+    std::map<Value*, std::set<Value*>> mallocPointers; // Указатели, связанные с каждым malloc
+    std::map<unsigned, std::set<Value*>> argPointers;  // Указатели, связанные с каждым аргументом
+    std::set<Value*> freedPointers;                    // Освобожденные указатели
+    std::map<Instruction*, std::set<Value*>> freedAfter; // Указатели, освобожденные после инструкции
+
+    for (unsigned i = 0; i < F.arg_size(); ++i) {
+        Value *arg = F.getArg(i);
+        argPointers[i].insert(arg);
+    }
+
+    bool changed = true;
+    while (changed) {
+        changed = false;
         for (BasicBlock &BB : F) {
             for (Instruction &I : BB) {
-                if (PrevInst != nullptr) {
-                    for (unsigned i = 0; i < PrevInst->getNumOperands(); i++) {                            
-                        Value *Operand = PrevInst->getOperand(i);
-                        if (std::find(freeOperands.begin(), freeOperands.end(), Operand) != freeOperands.end()) {
-                            if (auto *Store = dyn_cast<StoreInst>(PrevInst)) {
-                                storeOperand = Store->getPointerOperand();
-                                valueOperand = Store->getValueOperand();
-                                if (isa<ConstantPointerNull>(valueOperand))
-                                    continue;
-                            }
-                            if (auto *Call = dyn_cast<CallInst>(&I)) {
-                                llvm::Function *Callee = Call->getCalledFunction();
-                                if (Callee && Callee->getName() != "free") {
-                                    UAFFlag = 1;
-                                }
-                            }
-                            else UAFFlag = 1;
-                        }
-                    }
-                }
-
-                if (auto *Store = dyn_cast<StoreInst>(&I)) {
-                    if (PrevInst){
-                        if (auto *Load = dyn_cast<LoadInst>(PrevInst)) {
-                            storeOperand = Store->getPointerOperand();
-                            loadOperand = Load->getPointerOperand();
-
-                            for (auto &loadop : mallocOperands) {
-                                if (std::find(loadop.second.begin(), loadop.second.end(), loadOperand) != loadop.second.end()) {
-                                    mallocOperands[loadop.first].push_back(storeOperand);
-                                }
-                            } 
-                        }
-                    }
-                }
-
-                if(mallocFlag){
-                    if(auto *Store = dyn_cast<StoreInst>(&I)){
-                        PointerOperand = Store->getPointerOperand();
-                        mallocOperands[mallocCount].push_back(PointerOperand);
-                        mallocCount++;
-                        mallocFlag--;
-                    }
-                }
-
                 if (auto *Call = dyn_cast<CallInst>(&I)) {
-                    llvm::Function *Callee = Call->getCalledFunction();
+                    Function *Callee = Call->getCalledFunction();
                     if (Callee && Callee->getName() == "malloc") {
-                        mallocFlag++;
+                        Value *mallocResult = Call;
+                        if (mallocPointers[mallocResult].insert(mallocResult).second) {
+                            changed = true;
+                        }
                     }
+                }
+                if (auto *Store = dyn_cast<StoreInst>(&I)) {
+                    Value *valueOp = Store->getValueOperand();
+                    Value *pointerOp = Store->getPointerOperand();
+                    for (auto &mp : mallocPointers) {
+                        if (mp.second.count(valueOp) && mp.second.insert(pointerOp).second) {
+                            changed = true;
+                        }
+                    }
+                    for (auto &ap : argPointers) {
+                        if (ap.second.count(valueOp) && ap.second.insert(pointerOp).second) {
+                            changed = true;
+                        }
+                    }
+                }
+                if (auto *Load = dyn_cast<LoadInst>(&I)) {
+                    Value *pointerOp = Load->getPointerOperand();
+                    for (auto &mp : mallocPointers) {
+                        if (mp.second.count(pointerOp) && mp.second.insert(Load).second) {
+                            changed = true;
+                        }
+                    }
+                    for (auto &ap : argPointers) {
+                        if (ap.second.count(pointerOp) && ap.second.insert(Load).second) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
 
-                    if (Callee && Callee->getName() == "free") {
-                        if (auto *Load = dyn_cast<LoadInst>(PrevInst)){
-                            PointerOperand = Load->getPointerOperand();
-                            for (auto &indx : mallocOperands) {
-                                if (std::find(indx.second.begin(), indx.second.end(), PointerOperand) != indx.second.end()) {
-                                    if (std::find(freeOperands.begin(), freeOperands.end(), PointerOperand) == freeOperands.end())
-                                        freeCount++;
-                                    for (auto &oper : indx.second) {
-                                        freeOperands.push_back(oper);
-                                    }
-                                }
+    for (BasicBlock &BB : F) {
+        for (Instruction &I : BB) {
+            if (auto *Call = dyn_cast<CallInst>(&I)) {
+                Function *Callee = Call->getCalledFunction();
+                if (Callee) {
+                    if (Callee->getName() == "free") {
+                        Value *arg = Call->getArgOperand(0);
+                        for (auto &mp : mallocPointers) {
+                            if (mp.second.count(arg)) {
+                                freedPointers.insert(mp.first);
+                                freedAfter[&I].insert(mp.first);
                             }
                         }
-                        else if (auto *Load = dyn_cast<LoadInst>(PrevPrevInst)) {
-                            PointerOperand = Load->getPointerOperand();
-                            for (auto &indx : mallocOperands) {
-                                if (std::find(indx.second.begin(), indx.second.end(), PointerOperand) != indx.second.end()) {
-                                    if (std::find(freeOperands.begin(), freeOperands.end(), PointerOperand) == freeOperands.end())
-                                        freeCount++;
-                                    for (auto &oper : indx.second) {
-                                        freeOperands.push_back(oper);
+                        for (auto &ap : argPointers) {
+                            if (ap.second.count(arg)) {
+                                res.freedArgs.insert(ap.first);
+                            }
+                        }
+                    } else if (Callee->getName() != "malloc") {
+                        auto &calleeRes = FAM.getResult<UAFMLAnalysis>(*Callee);
+                        for (unsigned i : calleeRes.freedArgs) {
+                            if (i < Call->arg_size()) {
+                                Value *arg = Call->getArgOperand(i);
+                                for (auto &mp : mallocPointers) {
+                                    if (mp.second.count(arg)) {
+                                        freedPointers.insert(mp.first);
+                                        freedAfter[&I].insert(mp.first);
                                     }
                                 }
                             }
                         }
                     }
                 }
-                if (PrevInst) PrevPrevInst = PrevInst;
-                PrevInst = &I;
             }
         }
-        if(mallocCount != freeCount) {
-                MLFlag = 1;
+    }
+
+    for (BasicBlock &BB : F) {
+        for (Instruction &I : BB) {
+            std::set<Value*> freedBefore;
+            for (auto &fa : freedAfter) {
+                if (fa.first->comesBefore(&I)) {
+                    freedBefore.insert(fa.second.begin(), fa.second.end());
+                }
             }
-        OutRes.push_back(MLFlag);
-        OutRes.push_back(UAFFlag);
-        return OutRes;
-    }
-
-    PreservedAnalyses UAFMLPrinterPass::run(Function &F,
-                                           FunctionAnalysisManager &FAM) {
-        auto &OutRes = FAM.getResult<UAFMLAnalysis>(F);
-
-        if (OutRes[0] == 1 || OutRes[1] == 1) {
-            OS << "Function name: " << F.getName() << "\n";
-            if (OutRes[0] == 1) OS << "\tWARNING: Memory Leak detection\n";
-            if (OutRes[1] == 1) OS << "\tWARNING: Use After Free detection\n";
+            for (unsigned i = 0; i < I.getNumOperands(); ++i) {
+                Value *op = I.getOperand(i);
+                for (Value *freed : freedBefore) {
+                    if (mallocPointers[freed].count(op)) {
+                        res.flags[1] = 1; // UAFFlag
+                    }
+                }
+            }
         }
-        else OS << "Everything is fine!\n";
-
-        return PreservedAnalyses::all();
     }
+
+    // Проверка MemoryLeak
+    int mallocCount = mallocPointers.size();
+    int freeCount = freedPointers.size();
+    if (mallocCount > freeCount) {
+        res.flags[0] = 1; // MLFlag
+    }
+
+    return res;
+}
+
+PreservedAnalyses UAFMLPrinterPass::run(Function &F, FunctionAnalysisManager &FAM) {
+    auto &res = FAM.getResult<UAFMLAnalysis>(F);
+
+    if (res.flags[0] == 1 || res.flags[1] == 1) {
+        OS << "Function name: " << F.getName() << "\n";
+        if (res.flags[0] == 1) OS << "\tWARNING: Memory Leak detection\n";
+        if (res.flags[1] == 1) OS << "\tWARNING: Use After Free detection\n";
+    } else {
+        OS << "Function " << F.getName() << ": Everything is fine!\n";
+    }
+
+    return PreservedAnalyses::all();
+}
+
 }
